@@ -63,6 +63,7 @@ jobs:
           WRITE_EXIT=$?
           set -e
           echo "$WRITE_OUT"
+          echo "write_output=$WRITE_OUT" >> $GITHUB_OUTPUT
           exit $WRITE_EXIT
 
       - name: Verify IDL on-chain (fetch)
@@ -74,6 +75,7 @@ jobs:
             ${{ inputs.program_id }} \
             --keypair /tmp/keeper.json \
             --rpc ${{ steps.rpc.outputs.url }} 2>&1)
+          FETCH_EXIT=$?
           set -e
           echo "$FETCH_OUT" | head -c 500
           if echo "$FETCH_OUT" | grep -q '{'; then
