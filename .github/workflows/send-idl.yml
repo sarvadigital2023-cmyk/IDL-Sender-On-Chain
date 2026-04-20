@@ -57,6 +57,11 @@ jobs:
             echo "url=https://api.devnet.solana.com" >> $GITHUB_OUTPUT
           fi
 
+      - name: Create minimal Anchor workspace
+        run: |
+          printf '[provider]\ncluster = "%s"\nwallet = "/tmp/keeper.json"\n' "${{ steps.rpc.outputs.url }}" > Anchor.toml
+          echo "Anchor.toml created for cluster: ${{ steps.rpc.outputs.url }}"
+
       - name: Write IDL on-chain (OLD format anchor:idl createWithSeed)
         id: write_idl
         run: |
