@@ -65,25 +65,22 @@ jobs:
       - name: Write IDL on-chain (OLD format anchor:idl createWithSeed)
         id: write_idl
         run: |
-          echo "Writing IDL to OLD format anchor:idl account..."
           echo "Program: ${{ inputs.program_id }}"
           echo "Cluster: ${{ steps.rpc.outputs.url }}"
-          # Try init first (new account). On failure, try upgrade (existing account).
-          if anchor idl init \
-              --filepath /tmp/idl.json \
+          # Step 1: close any existing IDL account (0x1004 blocker) — ignore errors
+          echo "Closing existing IDL account (if any)..."
+          anchor idl close \
               --provider.cluster "${{ steps.rpc.outputs.url }}" \
               --provider.wallet /tmp/keeper.json \
-              ${{ inputs.program_id }} 2>&1; then
-            echo "IDL account initialized successfully (new account)"
-          else
-            echo "Init failed — trying upgrade (account may already exist)..."
-            anchor idl upgrade \
+              ${{ inputs.program_id }} 2>&1 || echo "Close skipped (no existing IDL or already closed)"
+          # Step 2: init fresh IDL account in OLD format (createWithSeed)
+          echo "Initializing fresh IDL account..."
+          anchor idl init \
               --filepath /tmp/idl.json \
               --provider.cluster "${{ steps.rpc.outputs.url }}" \
               --provider.wallet /tmp/keeper.json \
               ${{ inputs.program_id }}
-            echo "IDL upgraded successfully (existing account)"
-          fi
+          echo "IDL account written successfully (OLD format)"
 
       - name: Verify IDL on-chain (anchor idl fetch — OLD format)
         id: verify_idl
