@@ -1,4 +1,4 @@
-name: Send IDL On-Chain
+name: Send IDL On-Chain (Anchor OLD Format)
 
 on:
   workflow_dispatch:
@@ -43,6 +43,11 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Install Anchor CLI 0.30.1 (writes OLD format anchor:idl)
+        run: |
+          npm install -g @coral-xyz/anchor-cli@0.30.1
+          anchor --version
+
       - name: Set RPC URL
         id: rpc
         run: |
@@ -52,22 +57,59 @@ jobs:
             echo "url=https://api.devnet.solana.com" >> $GITHUB_OUTPUT
           fi
 
-      - name: Write IDL on-chain
+      - name: Write IDL on-chain (OLD format anchor:idl createWithSeed)
         id: write_idl
         run: |
-          npx --yes @solana-program/program-metadata@latest write idl \
-            ${{ inputs.program_id }} /tmp/idl.json \
-            --keypair /tmp/keeper.json \
-            --rpc ${{ steps.rpc.outputs.url }}
+          echo "Writing IDL to OLD format anchor:idl account..."
+          echo "Program: ${{ inputs.program_id }}"
+          echo "Cluster: ${{ steps.rpc.outputs.url }}"
+          # Try init first (new account). On failure, try upgrade (existing account).
+          if anchor idl init \
+              --filepath /tmp/idl.json \
+              --provider.cluster "${{ steps.rpc.outputs.url }}" \
+              --provider.wallet /tmp/keeper.json \
+              ${{ inputs.program_id }} 2>&1; then
+            echo "IDL account initialized successfully (new account)"
+          else
+            echo "Init failed — trying upgrade (account may already exist)..."
+            anchor idl upgrade \
+              --filepath /tmp/idl.json \
+              --provider.cluster "${{ steps.rpc.outputs.url }}" \
+              --provider.wallet /tmp/keeper.json \
+              ${{ inputs.program_id }}
+            echo "IDL upgraded successfully (existing account)"
+          fi
+
+      - name: Verify IDL on-chain (anchor idl fetch — OLD format)
+        id: verify_idl
+        if: steps.write_idl.outcome == 'success'
+        run: |
+          echo "Waiting 8s for on-chain propagation..."
+          sleep 8
+          FETCH=$(anchor idl fetch \
+            --provider.cluster "${{ steps.rpc.outputs.url }}" \
+            ${{ inputs.program_id }} 2>&1 || true)
+          echo "Fetch result (first 300 chars): ${FETCH:0:300}"
+          if echo "$FETCH" | grep -q '"instructions"'; then
+            echo "verified=true" >> $GITHUB_OUTPUT
+            echo "VERIFIED: OLD format anchor:idl confirmed on-chain"
+          else
+            echo "verified=false" >> $GITHUB_OUTPUT
+            echo "NOT VERIFIED: anchor idl fetch did not return IDL with instructions"
+            exit 1
+          fi
 
       - name: Write output to repo
         if: always()
         run: |
-          OUTCOME="${{ steps.write_idl.outcome }}"
-          if [ "$OUTCOME" = "success" ]; then
+          WRITE_OK="${{ steps.write_idl.outcome }}"
+          VERIFY_OK="${{ steps.verify_idl.outcome }}"
+          if [ "$WRITE_OK" = "success" ] && [ "$VERIFY_OK" = "success" ]; then
             JSON="{\"success\":true,\"programId\":\"${{ inputs.program_id }}\",\"cluster\":\"${{ inputs.cluster }}\"}"
+          elif [ "$WRITE_OK" != "success" ]; then
+            JSON="{\"success\":false,\"error\":\"anchor idl init\/upgrade failed — check GitHub Actions log\",\"programId\":\"${{ inputs.program_id }}\",\"cluster\":\"${{ inputs.cluster }}\"}"
           else
-            JSON="{\"success\":false,\"error\":\"write idl failed — open GitHub Actions run log for details\",\"programId\":\"${{ inputs.program_id }}\",\"cluster\":\"${{ inputs.cluster }}\"}"
+            JSON="{\"success\":false,\"error\":\"write succeeded but anchor idl fetch failed — IDL NOT on-chain\",\"programId\":\"${{ inputs.program_id }}\",\"cluster\":\"${{ inputs.cluster }}\"}"
           fi
           CONTENT=$(printf '%s' "$JSON" | base64 -w 0)
           gh api repos/${{ github.repository }}/contents/outputs/${{ inputs.job_id }}.json \
