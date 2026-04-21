@@ -43,7 +43,7 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Anchor CLI 0.30.1 (writes OLD format anchor:idl)
+      - name: Install Anchor CLI 0.30.1 (anchor:idl createWithSeed — OLD format)
         run: |
           npm install -g @coral-xyz/anchor-cli@0.30.1
           anchor --version
@@ -62,25 +62,49 @@ jobs:
           printf '[provider]\ncluster = "%s"\nwallet = "/tmp/keeper.json"\n' "${{ steps.rpc.outputs.url }}" > Anchor.toml
           echo "Anchor.toml created for cluster: ${{ steps.rpc.outputs.url }}"
 
+      - name: Verify program exists on-chain
+        run: |
+          echo "Checking program ${{ inputs.program_id }} on ${{ steps.rpc.outputs.url }}..."
+          OWNER=$(curl -sf -X POST '${{ steps.rpc.outputs.url }}' \
+            -H 'Content-Type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"getAccountInfo","params":["${{ inputs.program_id }}",{"encoding":"base64"}]}' \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); v=d['result']['value']; print(v['owner'] if v else 'NOT_FOUND')" 2>/dev/null || echo 'RPC_ERROR')
+          echo "Program account owner: $OWNER"
+          if [ "$OWNER" = 'NOT_FOUND' ]; then
+            echo 'ERROR: Program not found on ${{ inputs.cluster }}. Deploy the program first.'
+            exit 1
+          fi
+          if [ "$OWNER" = 'RPC_ERROR' ]; then
+            echo 'WARNING: Could not verify program (RPC error) — continuing anyway'
+          fi
+          echo "Program verified: owner=$OWNER"
+
       - name: Write IDL on-chain (OLD format anchor:idl createWithSeed)
         id: write_idl
         run: |
           echo "Program: ${{ inputs.program_id }}"
           echo "Cluster: ${{ steps.rpc.outputs.url }}"
-          # Step 1: close any existing IDL account (0x1004 blocker) — ignore errors
-          echo "Closing existing IDL account (if any)..."
+          # Step 1: close existing IDL account — ignore errors (account may not exist)
+          echo "=== CLOSE (ignore errors) ==="
           anchor idl close \
               --provider.cluster "${{ steps.rpc.outputs.url }}" \
               --provider.wallet /tmp/keeper.json \
-              ${{ inputs.program_id }} 2>&1 || echo "Close skipped (no existing IDL or already closed)"
-          # Step 2: init fresh IDL account in OLD format (createWithSeed)
-          echo "Initializing fresh IDL account..."
-          anchor idl init \
+              ${{ inputs.program_id }} 2>&1 || true
+          # Step 2: init fresh IDL account — capture real error output
+          echo "=== INIT ==="
+          INIT_OUT=$(anchor idl init \
               --filepath /tmp/idl.json \
               --provider.cluster "${{ steps.rpc.outputs.url }}" \
               --provider.wallet /tmp/keeper.json \
-              ${{ inputs.program_id }}
-          echo "IDL account written successfully (OLD format)"
+              ${{ inputs.program_id }} 2>&1) && {
+            echo "IDL account written successfully (OLD format)"
+          } || {
+            echo "INIT FAILED: $INIT_OUT"
+            echo "anchor_error<<EOF" >> $GITHUB_OUTPUT
+            echo "$INIT_OUT" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            exit 1
+          }
 
       - name: Verify IDL on-chain (anchor idl fetch — OLD format)
         id: verify_idl
@@ -109,7 +133,9 @@ jobs:
           if [ "$WRITE_OK" = "success" ] && [ "$VERIFY_OK" = "success" ]; then
             JSON="{\"success\":true,\"programId\":\"${{ inputs.program_id }}\",\"cluster\":\"${{ inputs.cluster }}\"}"
           elif [ "$WRITE_OK" != "success" ]; then
-            JSON="{\"success\":false,\"error\":\"anchor idl init\/upgrade failed — check GitHub Actions log\",\"programId\":\"${{ inputs.program_id }}\",\"cluster\":\"${{ inputs.cluster }}\"}"
+            RAW_ERR=$(echo '${{ steps.write_idl.outputs.anchor_error }}' | head -c 300 | tr -d '\n\"' | sed "s/'/\\''/g" || true)
+            ERR_MSG="anchor idl init failed: ${RAW_ERR:-check GitHub Actions log}"
+            JSON="{\"success\":false,\"error\":\"${ERR_MSG}\",\"programId\":\"${{ inputs.program_id }}\",\"cluster\":\"${{ inputs.cluster }}\"}"
           else
             JSON="{\"success\":false,\"error\":\"write succeeded but anchor idl fetch failed — IDL NOT on-chain\",\"programId\":\"${{ inputs.program_id }}\",\"cluster\":\"${{ inputs.cluster }}\"}"
           fi
